@@ -1,6 +1,9 @@
+
+
 // Swan Gallery Pick host — pairs with Swan mobile 1.1.0 and later. What changed in each
 // release, and whether this file needs updating: GALLERY_PICK.md, "Versions and
 // release notes".
+
 import UIKit
 import WebKit
 import Photos
@@ -8,17 +11,23 @@ import PhotosUI
 import Vision
 import Network
 import SensitiveContentAnalysis
+
 final class ViewController: UIViewController {
+
     /// Where the SDK bundle is served from. Must be **https** — getUserMedia needs
     /// a secure context, so an http or file:// URL gives no camera.
     let sdkURL = URL(string: "https://swan-mobile-web-component.swan.so")!
+
     static let bridgeName = "swanBridge"
+
     // ---- Fill these in before running ----------------------------------------
+
     /// Who the flow is running for. `gender` is optional: "male" or "female" skips
     /// the flow's own gender screen; anything else, or nil, shows it.
     static let userEmail = "your@example.com"
     static let shopDomain = "your-customer-shop-domain"
     static let userGender = "male"        // "male" | "female"
+
     /// Optional. A height you already know, in centimetres.
     ///
     /// Inside 152-213 the flow skips its own ruler screen and builds with this.
@@ -28,14 +37,17 @@ final class ViewController: UIViewController {
     ///
     /// Set to nil to see the ruler.
     static let userHeightCm: Any? = 181
+
     /// Session token from `POST /auth/session`. **Required — without this nothing
     /// uploads**: the scan and picker work, then Build stops with an error naming
     /// what is missing (`onError` with stage "config").
     static let sessionToken = ""   // paste a token from POST /auth/session
+
     /// How far back the library search reaches, in months. 1–36; the flow clamps
     /// anything outside that. "Load more photos" appears only when the user allows
     /// limited photo access. 12 is the flow's own default.
     static let monthsBack = 12
+
     /// Brand styling *and* wording for the flow, passed through as `config`.
     ///
     /// Two independent halves: `style` becomes CSS variables, `content` replaces
@@ -83,6 +95,7 @@ final class ViewController: UIViewController {
                 "buttonDisabledTextColor": "#FFF3F8",
             ],
         ],
+
         // Wording, grouped by the screen it appears on. Partial at both levels: a
         // group left out keeps all its defaults, and a name left out inside a
         // group keeps just that one — so a brand can change one button without
@@ -189,61 +202,77 @@ final class ViewController: UIViewController {
             ]
         ]
     ]
+
     /// Custom scheme for serving photos straight into <img src>. Must not collide
     /// with a scheme WebKit already handles — registering "http" or "https" throws.
     static let photoScheme = "swan-photo"
+
     /// Held strongly here; the configuration's reference alone is not something to
     /// rely on for an object we also want to keep alive across navigations.
     let photoSchemeHandler = PhotoSchemeHandler()
+
     var webView: WKWebView!
     var webReadyWatchdog: DispatchWorkItem?
     var isLimitedAccess = false
     var referencePrint: VNFeaturePrintObservation?
+
     /// The reference again, left-right flipped. A front-camera selfie is not
     /// necessarily oriented the way the user appears in someone else's photo, and
     /// this descriptor is not mirror-invariant — the self-test put that at 0.142,
     /// which is free to reclaim by keeping both and taking the nearer one.
     var referencePrintMirrored: VNFeaturePrintObservation?
+
     /// The reference face pre-blurred to several source resolutions.
     ///
     /// A 120px face upscaled to 224 is soft while a 380px one downscaled is sharp,
     /// and the descriptor reads that difference as dissimilarity. Each candidate is
     /// compared against the reference rendered at its own resolution.
     var referenceScales: [ScaledReference] = []
+
     /// Which reference bucket the last scored photo used. Logged so the scale
     /// ladder can be judged from real data.
     var lastReferenceWidth = 0
+
     /// Face measurements from the last photo `matchPerson` looked at, for
     /// `ScanEval`. Only filled in eval mode — the quality number costs an extra
     /// Vision pass per photo.
     var lastFaceMetrics: FaceMetrics?
+
     /// Whether the last photo `matchPerson` scored had its face re-cropped from a
     /// larger render. Read by `ScanEval`, so a run shows whether it actually kicked in.
     var lastCropFullRes = false
+
     /// Whether the last photo `loadPhoto` returned had to be turned upright. Read by
     /// `ScanEval`, since the photo it is handed no longer shows it.
     var lastLoadRotated = false
+
     /// Whether the last photo `loadPhoto` returned was the phone's smaller copy of a
     /// photo whose full version is only in iCloud. Counted by the scan.
     var lastLoadLocalCopy = false
+
     /// Why the last `loadPhoto` came back empty, for the verbose log: whether iOS
     /// said the photo was in iCloud, and how large a copy the phone offered.
     var lastLoadNote = ""
+
     /// What the second head-to-toe check found, when `matchPerson` ran one — see
     /// the full-body gate there. Nil when no retry happened. Read by the scan log.
     var lastBodyRetry: (note: String, rescued: Bool)?
+
     /// The smallest local copy worth scanning, on its longer side. Under this the
     /// phone holds only a thumbnail, and a face read from one is blur: it would
     /// either fail the size gate or be scored against mush, so the photo is
     /// skipped as it was before, as "no image".
     static let minLocalCopyPixels = 800
+
     /// How long `loadPhoto` waits for the phone's copy of an iCloud photo. It is
     /// already on the phone, so this is a ceiling against a stalled callback, not
     /// a download allowance.
     static let localCopyWait: DispatchTimeInterval = .seconds(2)
+
     /// The copy iOS offered when the full photo was in iCloud, however small. The
     /// scan reads it only to ask one question: does this look like a selfie?
     var lastLoadThumbnail: UIImage?
+
     // ---- iCloud selfies ------------------------------------------------------
     //
     // The phone keeps a 120px thumbnail of a photo whose full version is in iCloud
@@ -252,6 +281,7 @@ final class ViewController: UIViewController {
     // put through the same gates as a local photo. Full-length photos stay out: at
     // 120px nothing says whose body it is, and downloading every single-person
     // photo in a library is the library.
+
     /// Longest side of the copy asked for. Enough for a selfie's face at the sizes
     /// the matcher is tuned for; a fraction of the original's bytes.
     static let cloudPixels: CGFloat = 1024
@@ -262,36 +292,45 @@ final class ViewController: UIViewController {
     static let cloudTimeBudget: TimeInterval = 60
     /// Per-photo limit, as for sizing an original.
     static let cloudTimeout: DispatchTimeInterval = .seconds(10)
+
     /// Wi-Fi, not Low Data Mode, and online. The iCloud pass never spends mobile data.
     static var cloudDownloadsAllowed: Bool {
         let path = pathMonitor.currentPath
         return path.status == .satisfied && !path.isExpensive && !path.isConstrained
     }
+
     /// Bumped every time the flow resets. A scan loop captures the value it
     /// started with and stops as soon as they differ, which is the only way to
     /// interrupt it — a dispatched block keeps running through a page reload, and
     /// its replies would otherwise be accepted by whatever scan is live next.
     var scanGeneration = 0
+
     /// Reload attempts after a WebContent process crash, and the ceiling on them.
     var processReloads = 0
     static let maxProcessReloads = 3
+
     /// One console line per photo scanned. Useful on a small library, a flood on
     /// a real one — a 10k-photo scan prints 10k lines.
     static let verboseLogging = false
+
     /// Measures matching against a hand-labelled album, and prints the result at
     /// the end of every scan. **Debug only — keep it off in any build a brand sees.**
     /// The grid is unaffected either way; see `ScanEval`.
     static let evalMode = false
+
     /// The album a tester fills with every photo that *should* reach the grid:
     /// them, alone, head to toe — or a selfie of them. Read as the answer key.
     static let evalAlbumTitle = "Swan-Eval"
+
     /// How much of the grid "precision at the top" looks at. A measuring window,
     /// not a number of photos the grid has to show.
     static let evalTopN = 20
+
     /// Replace the saved eval selfie with the one taken this run. Set true for one
     /// run — new lighting, or a different tester on the same phone — then back.
     /// See `evalReferenceSelfie`.
     static let evalResaveSelfie = false
+
     /// Echoes the SDK's own API and socket trace, and the bodies of its callbacks,
     /// into the Xcode console.
     ///
@@ -304,12 +343,15 @@ final class ViewController: UIViewController {
     /// The flow is unaffected either way — this only decides whether the host
     /// prints what crosses the bridge.
     static let debugBridgeLogging = false
+
     /// Writes the selfie and candidate face crops to Documents. Biometric data
     /// on disk — keep false outside local debugging.
     var debugDumpCrops = false
     var debugCropsSaved = 0
     static let debugCropLimit = 12
+
     // MARK: - Lifecycle
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
@@ -320,32 +362,40 @@ final class ViewController: UIViewController {
         webView.load(URLRequest(url: sdkURL))
         startWebReadyWatchdog()
     }
+
     deinit {
         webView?.configuration.userContentController
             .removeScriptMessageHandler(forName: Self.bridgeName)
         webReadyWatchdog?.cancel()
         print("♻️ ViewController deinit")
     }
+
     // MARK: - Setup
+
     func setupWebView() {
         let contentController = WKUserContentController()
+
         // Retained strongly, so passing `self` leaks the VC, the web view and a
         // content process on every presentation. The proxy points back weakly.
         contentController.add(BridgeProxy(target: self), name: Self.bridgeName)
+
         let configuration = WKWebViewConfiguration()
         configuration.userContentController = contentController
         // Without these the scan camera opens fullscreen and the voice-over
         // guidance is silently muted.
         configuration.allowsInlineMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
+
         // Lets React write <img src="swan-photo://…"> instead of moving bytes
         // through the JSON bridge. The base64 path is the fallback if it is blocked.
         configuration.setURLSchemeHandler(photoSchemeHandler, forURLScheme: Self.photoScheme)
+
         webView = WKWebView(frame: .zero, configuration: configuration)
         webView.uiDelegate = self
         webView.navigationDelegate = self
         webView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(webView)
+
         NSLayoutConstraint.activate([
             webView.topAnchor.constraint(equalTo: view.topAnchor),
             webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -353,6 +403,7 @@ final class ViewController: UIViewController {
             webView.trailingAnchor.constraint(equalTo: view.trailingAnchor)
         ])
     }
+
     /// A JS error in the bundle gives a *successful* navigation and a blank page —
     /// same white screen as a network failure, opposite cause. This log is what
     /// tells them apart.
@@ -363,7 +414,9 @@ final class ViewController: UIViewController {
         webReadyWatchdog = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: work)
     }
+
     // MARK: - Sending to web
+
     /// `callAsyncJavaScript` with an arguments dictionary, not a spliced string:
     /// U+2028/U+2029 are legal in JSON but terminate a line in JS source, so a
     /// spliced payload can throw a syntax error and vanish silently.
@@ -380,6 +433,7 @@ final class ViewController: UIViewController {
         }
     }
 }
+
 /// Which way the person in a photo is facing.
 ///
 /// String-backed so the raw value can cross the bridge as-is — the web side
@@ -393,14 +447,18 @@ enum PhotoType: String {
     /// alongside `isFullBody` to tell those apart.
     case unknown
 }
+
 /// One reference print, built from a face crop degraded to `sourceWidth`.
 struct ScaledReference {
     let sourceWidth: CGFloat
     let print: VNFeaturePrintObservation
     let mirrored: VNFeaturePrintObservation?
 }
+
 // MARK: - Receiving from web
+
 extension ViewController: WKScriptMessageHandler {
+
     func userContentController(
         _ userContentController: WKUserContentController,
         didReceive message: WKScriptMessage
@@ -417,12 +475,14 @@ extension ViewController: WKScriptMessageHandler {
             print("⚠️ Bridge got unsupported body: \(type(of: message.body))")
             return
         }
+
         guard let payload = body, let type = payload["type"] as? String else {
             // Only under the debug flag: an undecodable body is by definition
             // unbounded and could hold a token, an email or photo bytes.
             if Self.debugBridgeLogging { print("⚠️ Bridge got undecodable message: \(message.body)") }
             return
         }
+
         switch type {
         case "WEB_READY":
             webReadyWatchdog?.cancel()
@@ -456,8 +516,10 @@ extension ViewController: WKScriptMessageHandler {
                     "monthsBack": Self.monthsBack,
                 ]
             ])
+
         case "GALLERY_SCAN_START":
             let filters = payload["payload"] as? [String: Any] ?? [:]
+
             // Redact the reference image before logging — a base64 selfie is tens
             // of thousands of characters and floods the console, hiding every
             // other line you actually need to read.
@@ -468,24 +530,28 @@ extension ViewController: WKScriptMessageHandler {
             print("🔍 GALLERY_SCAN_START \(loggable)")
             startGalleryScan(monthsBack: filters["monthsBack"] as? Int ?? 12,
                              referenceImage: filters["referenceImage"] as? String)
+
         case "GALLERY_THUMBNAILS":
             // Fallback path: one photo the custom scheme could not load. Asked for
             // per tile, so there is no batch to cap and nothing is fetched that the
             // user never scrolled to.
             let thumbId = (payload["payload"] as? [String: Any])?["assetId"] as? String ?? ""
             sendThumbnail(for: thumbId)
+
         case "GALLERY_FULL_IMAGE":
             // One photo per request, because fetch() cannot reach the custom scheme
             // (see SCHEME_TEST_RESULT below) and a whole selection in one message
             // would be several megabytes of base64 in a single JSON payload.
             let assetId = (payload["payload"] as? [String: Any])?["assetId"] as? String ?? ""
             sendFullImage(id: assetId)
+
         case "OPEN_SETTINGS":
             // A web page cannot navigate to the settings URL scheme, so the only way
             // to offer "Open Settings" from inside the WebView is to ask the host.
             if let url = URL(string: UIApplication.openSettingsURLString) {
                 UIApplication.shared.open(url)
             }
+
         case "GALLERY_PICK_MORE":
             // Reopens iOS's limited-library picker. It shows what the user has
             // already shared and lets them add to it — nothing is re-picked from
@@ -498,6 +564,7 @@ extension ViewController: WKScriptMessageHandler {
                 // sent back through the camera.
                 self.sendToWeb(["type": "onGalleryPickedMore", "payload": ["added": added.count]])
             }
+
         case "WEB_LOG":
             // console.log inside a WKWebView only reaches Safari's Web Inspector.
             // The SDK mirrors its API and socket trace here so a device test
@@ -506,14 +573,17 @@ extension ViewController: WKScriptMessageHandler {
             if Self.debugBridgeLogging {
                 print((payload["payload"] as? [String: Any])?["text"] as? String ?? "")
             }
+
         case "GALLERY_RESET":
             // The web layer starts a scan, or abandons the flow. Either way nothing
             // from the previous run should survive into the next one.
             resetScanState()
+
         case "GALLERY_ANALYSE_PHOTO":
             // Sent when the user selects a photo. See analysePhoto(id:).
             let photoId = (payload["payload"] as? [String: Any])?["assetId"] as? String ?? ""
             analysePhoto(id: photoId)
+
         case "GALLERY_CAPTURE_PHOTO":
             // A photo the user took inside the flow, to fill a shot the library
             // could not. Held in memory and analysed like any other photo — never
@@ -523,12 +593,14 @@ extension ViewController: WKScriptMessageHandler {
             let captureURI = capture["dataURI"] as? String ?? ""
             print("📥 GALLERY_CAPTURE_PHOTO \(captureId) — \(captureURI.count / 1024)KB base64, shot \(capture["shot"] ?? "?")")
             storeCapture(id: captureId, dataURI: captureURI)
+
         case "GALLERY_CLEAR_CAPTURES":
             // Deliberately its own message rather than part of GALLERY_RESET: that
             // one is also sent at the start of every scan, and a user who takes a
             // photo and then asks for more library photos must keep it.
             print("🧹 clearing \(CaptureStore.count) held capture(s)")
             CaptureStore.removeAll()
+
         case "SCHEME_TEST_RESULT":
             // React reporting whether <img src="swan-photo://..."> worked.
             let ok = (payload["payload"] as? [String: Any])?["ok"] as? Bool ?? false
@@ -537,26 +609,31 @@ extension ViewController: WKScriptMessageHandler {
             print(ok
                   ? "\n🧪 <img> loads from the custom scheme (display only; fetch() is still blocked).\n"
                   : "\n🧪 Custom scheme blocked for <img> too — falling back to base64 thumbnails.\n")
+
         case "COMPONENT_CALLBACK":
             // Everything the flow reports comes through here. Replace each print
             // with your own handling.
             let name = payload["callbackName"] as? String ?? "?"
             let result = payload["payload"] as? [String: Any] ?? [:]
+
             // Replace these prints with your own handling. The switch is the part
             // worth keeping; the printing is a harness, and some of it echoes
             // signed URLs and the user's email — see `debugBridgeLogging`.
             guard Self.debugBridgeLogging else { break }
+
             switch name {
             case "onUploadStart":
                 // Photos are going up. `background` means the user is still picking
                 // and this started on its own — no Muse is being built yet.
                 let background = (result["background"] as? Bool ?? false) ? " (background)" : ""
                 print("\u{1f4e4} upload started\(background) — \(result["photoCount"] ?? 0) photo(s)")
+
             case "onUploadEnd":
                 // One file is up, or failed — per file, so a Live Photo's paired video
                 // reports separately under the still's id plus `.mov`.
                 let ok = result["uploaded"] as? Bool ?? false
                 print("\u{2b06}\u{fe0f} \(result["kind"] ?? "?") \(ok ? "uploaded" : "FAILED") \(result["assetId"] ?? "?") — original \(result["original"] ?? false)\((result["background"] as? Bool ?? false) ? " (background)" : "")\(ok ? "" : " — \(result["error"] ?? "")")")
+
             case "onComplete":
                 // The end of the flow. `photoIds` are the server's — this is what
                 // POST /muse/build takes. `assetIds` are local and it does not.
@@ -567,21 +644,26 @@ extension ViewController: WKScriptMessageHandler {
                 // The finished Muse's rendered views, as a JSON array of URLs —
                 // what the preview carousel is showing. Decode it to use them.
                 print("   museImages \(result["museImages"] as? String ?? "none")")
+
             case "onCaptureComplete":
                 // The camera fallback finished. Upload follows; onComplete closes out.
                 print("\u{1f4f8} captured \(result["photoIds"] ?? [])")
+
             case "onImageSelect":
                 // One photo tapped in the picker. `selected` false is a deselect.
                 let picked = (result["selected"] as? Bool ?? false) ? "picked" : "dropped"
                 print("\u{1f5b1} \(picked) \(result["assetId"] ?? "?") — \(result["count"] ?? 0) selected")
+
             case "onLoadMore":
                 // The scan did not find enough and the user asked for more.
                 // `path` is "shared_library" (the OS picker reopened) or
                 // "older_photos" (the search reached further back). Worth watching:
                 // it is the flow saying its own search came up short.
                 print("\u{1f50e} load more — \(result["path"] ?? "?"), \(result["shown"] ?? 0) shown, \(result["selected"] ?? 0) selected")
+
             case "onMuseStart":
                 print("\u{1f3a8} muse requested — \(result["photoIds"] ?? [])")
+
             case "onMuseEnd":
                 // The build socket settled. Fires for a failure as well as a success —
                 // onComplete never runs when the build fails, so this is the only
@@ -594,24 +676,31 @@ extension ViewController: WKScriptMessageHandler {
                 // `rejectedPhotos` are in here and nowhere else — decode it to
                 // find out what the build wants before the user tries again.
                 print("   frame \(result["data"] as? String ?? "none")")
+
             case "onError":
                 // `stage` is photos | upload | muse. The web layer already shows the
                 // user a failure screen; this is for your logging and alerting.
                 print("\u{274c} \(result["stage"] ?? "?") failed — \(result["message"] ?? "") (\(result["failedCount"] ?? 0) photo(s))")
+
             case "onRetry":
                 // User pushed on the failure screen. `escalated` false = same photos
                 // again, true = they gave up on that set and went back.
                 print("\u{1f501} retry — \(result["kind"] ?? "?") escalated=\(result["escalated"] ?? false)")
+
             default:
                 print("\u{1f4e9} \(name) \(result)")
             }
+
         default:
             print("⚠️ Unhandled message type: \(type)")
         }
     }
 }
+
 // MARK: - Camera
+
 extension ViewController: WKUIDelegate {
+
     /// Required on iOS 15+ — without it the scan camera never opens.
     func webView(
         _ webView: WKWebView,
@@ -629,8 +718,11 @@ extension ViewController: WKUIDelegate {
         decisionHandler(.grant)
     }
 }
+
 // MARK: - Load failures
+
 extension ViewController: WKNavigationDelegate {
+
     /// The WebContent process was killed, usually memory pressure while backgrounded.
     ///
     /// Without this the web view stays permanently blank with no error and no
@@ -643,21 +735,25 @@ extension ViewController: WKNavigationDelegate {
             print("\u{1f480} Web content process terminated again — giving up after \(processReloads) reloads")
             return
         }
+
         processReloads += 1
         print("\u{1f480} Web content process terminated — reloading (\(processReloads)/\(Self.maxProcessReloads))")
         startWebReadyWatchdog()
         webView.reload()
     }
+
     // ngrok tunnels drop and the URL rotates on restart — without these a dead
     // tunnel is a blank screen with an empty console.
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         webReadyWatchdog?.cancel()
         print("❌ Could not reach \(sdkURL): \(error.localizedDescription)")
     }
+
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         webReadyWatchdog?.cancel()
         print("❌ Navigation failed: \(error.localizedDescription)")
     }
+
     /// The CDN answers a path it does not have with a 404 page. A version folder
     /// that was never published sends that page on to the latest release; any
     /// other missing path stays a 404 and the flow never starts.
@@ -670,6 +766,7 @@ extension ViewController: WKNavigationDelegate {
         }
         decisionHandler(.allow)
     }
+
     /// A pinned version that was never published: the CDN sent the page on to the
     /// latest release, so the flow works, but not on the release this file was
     /// tested with. Only checked when `sdkURL` names a version — a bare domain has
@@ -679,8 +776,11 @@ extension ViewController: WKNavigationDelegate {
         print("⚠️ Asked for \(sdkURL.path), got \(landed.path) — that version is not published; the latest release loaded instead")
     }
 }
+
 // MARK: - Gallery scan
+
 extension ViewController {
+
     /// Match cutoff for a full-length photo — fronts, and sides not in profile. Lower
     /// distance = more similar.
     ///
@@ -689,6 +789,7 @@ extension ViewController {
     /// scored 0.61–0.69. A head-turned front of one owner (0.779) drops; selfies and
     /// profile sides have cutoffs of their own below.
     static let matchThreshold: Float = 0.75
+
     /// The cutoff for a full-profile side: the body side-on **by its measured
     /// shoulders** — never by head turn alone — and the face turned past `profileYaw`.
     /// A photo whose shoulders could not be read gets `matchThreshold`: a stranger with
@@ -700,27 +801,32 @@ extension ViewController {
     /// 0.95. Only these photos: fronts, selfies and half-turned sides keep
     /// `matchThreshold`, and every other check still applies.
     static let profileMatchThreshold: Float = 0.92
+
     /// How far the head must be turned, in Vision's yaw radians (about 46°), for a
     /// side's face to count as in profile.
     static let profileYaw = 0.8
+
     /// The cutoff for a selfie. Tighter, because a selfie's face is large and sharp, so
     /// the user's own score low and a near miss is someone who looks like them.
     /// Measured on two libraries: own selfies 0.39–0.70, strangers' selfies 0.68–0.77
     /// on one phone and over 0.93 on the other. 0.65 keeps every front-facing own
     /// selfie; a strongly head-turned one (0.70) can drop, and a Muse needs only one.
     static let selfieMatchThreshold: Float = 0.65
+
     /// Only consider photos containing exactly one face.
     ///
     /// Taking the minimum distance across N faces is a best-of-N draw — a group
     /// shot gets N chances to look like you — so this is a precision fix, not just
     /// a speed one.
     static let requireSingleFace = true
+
     /// How large a second face or body must be, against the largest one in the
     /// photo, to count as someone else in it. Below this it is a passer-by in the
     /// distance, a face on a poster or a reflection — none of which make the photo
     /// a group shot, and all of which were rejecting selfies taken anywhere public.
     /// At a quarter, a person standing beside the shopper still counts.
     static let bystanderRatio: CGFloat = 0.25
+
     /// A face narrower than this is skipped — measured in the best copy of the photo
     /// the phone holds, not only the scan's downsampled render. A face of 68px there
     /// can be 133px in the original, and that photo is worth keeping.
@@ -728,11 +834,13 @@ extension ViewController {
     /// Deliberately permissive: a full-body photo has a small face by construction,
     /// and the answer to a weak descriptor is more source pixels, not a higher bar.
     static let minFacePixels: CGFloat = 120
+
     /// Require the lower body to be visible.
     ///
     /// A headshot and a full-length outfit photo match a face matcher equally well;
     /// only body-pose detection separates them.
     static let requireFullBody = true
+
     /// How wide a face must be, as a fraction of the frame's **shorter** side, for a
     /// photo with no lower body to count as a selfie rather than a badly cropped
     /// body shot.
@@ -745,11 +853,13 @@ extension ViewController {
     /// The shorter side, not the width: against the width a landscape selfie read as
     /// half the size of the same selfie held upright, and was rejected as a body shot.
     static let selfieFaceRatio: CGFloat = 0.30
+
     /// A face's width against the frame's shorter side — the one number every
     /// selfie decision reads, so the scan and a tap cannot disagree about it.
     static func faceRatio(boxWidth: CGFloat, in cgImage: CGImage) -> CGFloat {
         boxWidth * CGFloat(cgImage.width) / CGFloat(min(cgImage.width, cgImage.height))
     }
+
     /// How far the head must be turned, in Vision's yaw radians, for a full-length
     /// photo to count as a side rather than a front.
     ///
@@ -761,8 +871,10 @@ extension ViewController {
     ///
     /// Read the `🔬 FACE yaw` lines to re-judge it — every analysed photo prints one.
     static let sideYawThreshold = 0.25
+
     /// How sure Vision must be of a joint before it counts as seen.
     static let bodyJointConfidence: Float = 0.3
+
     /// Ankles a head-to-toe photo must show. One, not two: in a side photo the far
     /// ankle is routinely hidden behind the near leg, and requiring both would
     /// reject real side shots. The eval records the ankle count per photo, so if
@@ -772,6 +884,7 @@ extension ViewController {
     /// ankles passed — a photo cut off at the shins counted as full length. On the
     /// first labelled library every stranger in the grid had come in that way.
     static let minAnkles = 1
+
     /// How much of the image height, head to lowest ankle, the person must span.
     ///
     /// Measured from the eyes and nose rather than the crown, so a person who fills
@@ -784,6 +897,7 @@ extension ViewController {
     /// is in frame, so a normal step-back photo at ~0.43 passes.
     static let minBodySpan: CGFloat = 0.55
     static let minBodySpanBothAnkles: CGFloat = 0.40
+
     /// Room the photo must leave below the lowest ankle, as a fraction of the span —
     /// so the feet are in frame, not only the ankles.
     ///
@@ -792,6 +906,7 @@ extension ViewController {
     /// library: a photo with the toes cut had 0.05, the good full-length ones 0.14 and
     /// up — so this sits between. The eval records it per photo; retune from there.
     static let minFootRoom: CGFloat = 0.10
+
     /// Shoulder spread below which a full-length photo is a side.
     ///
     /// The spread is shoulder width across the photo against the torso's length —
@@ -803,10 +918,12 @@ extension ViewController {
     /// have, it rebuilt side-on people as facing the camera and read every side as
     /// under 5°.
     static let sideShoulderSpread: CGFloat = 0.40
+
     /// How sure Vision must be of a joint used for the spread. Lower than
     /// `bodyJointConfidence`: in a side view the far shoulder is half hidden, and
     /// refusing it would hand exactly those photos to the head turn.
     static let spreadJointConfidence: Float = 0.1
+
     /// One photo's type, from values the caller already has.
     ///
     /// Shared by the scan and by `classifyPhotoType` so a photo cannot be called
@@ -825,11 +942,13 @@ extension ViewController {
         guard let yaw else { return .unknown }
         return headType(yaw: yaw)
     }
+
     /// Front or side by the head's turn alone: the fallback above, and logged beside the
     /// body's answer so the two can be compared.
     static func headType(yaw: Double) -> PhotoType {
         abs(yaw) > sideYawThreshold ? .side : .front
     }
+
     /// Builds the reference face print, then asks for photo access.
     ///
     /// All of it off the main thread. Run inline it blocked long enough to stall
@@ -845,13 +964,17 @@ extension ViewController {
                        "payload": ["assetIds": [], "error": "no-reference"]])
             return
         }
+
         // Whatever the web side did or did not send, a scan always begins clean.
         resetScanState()
+
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
+
             // Eval mode only: every run is matched against one saved selfie, so a
             // change in the scores comes from the code, not from a new selfie.
             let referenceURI = Self.evalReferenceSelfie(reference)
+
             guard let selfie = Self.image(fromDataURI: referenceURI) else {
                 print("🚫 Reference image could not be decoded")
                 DispatchQueue.main.async {
@@ -860,6 +983,7 @@ extension ViewController {
                 }
                 return
             }
+
             guard let croppedSelfie = self.croppedFace(from: selfie),
                   let croppedCG = croppedSelfie.cgImage,
                   let print0 = self.facePrint(fromFace: croppedCG) else {
@@ -870,6 +994,7 @@ extension ViewController {
                 }
                 return
             }
+
             // The reference is a *cropped face*, normalised exactly like the
             // candidates. Printing the whole selfie against cropped faces measures
             // framing rather than identity, and every distance comes out meaningless.
@@ -878,17 +1003,22 @@ extension ViewController {
                 .flatMap { $0.cgImage }
                 .flatMap { self.facePrint(fromFace: $0) }
             self.buildReferenceScales(from: croppedSelfie)
+
             // A crop under ~80px means the reference is weak and every distance
             // below is measured against mush.
             let selfiePx = selfie.cgImage.map { "\($0.width)x\($0.height)" } ?? "?"
             let cropPx = "\(croppedCG.width)x\(croppedCG.height)"
             let ladder = self.referenceScales.map { String(Int($0.sourceWidth)) }.joined(separator: "/")
             print("🤳 Reference face ready — selfie \(selfiePx), face crop \(cropPx) -> normalised \(Int(Self.faceNormalSize.width))px, scales \(ladder), FeaturePrint revision \(Self.featurePrintRevision) (Vision default \(VNGenerateImageFeaturePrintRequest.defaultRevision))")
+
             self.saveDebugImage(selfie, name: "00-selfie")
             self.saveDebugImage(croppedSelfie, name: "00-reference-crop")
+
+
             DispatchQueue.main.async { self.requestAccessAndScan(monthsBack: monthsBack) }
         }
     }
+
     private func requestAccessAndScan(monthsBack: Int) {
         // .readWrite despite never writing: PHAccessLevel offers only .addOnly
         // (write-only) and .readWrite, so this is the only level that grants reads.
@@ -913,6 +1043,7 @@ extension ViewController {
             }
         }
     }
+
     /// Watches the network for the scan's iCloud sizing. Started once and kept for
     /// the life of the app.
     static let pathMonitor: NWPathMonitor = {
@@ -920,9 +1051,11 @@ extension ViewController {
         monitor.start(queue: DispatchQueue(label: "co.getswan.gallery.network"))
         return monitor
     }()
+
     /// The shopper has asked the phone to save data — Low Data Mode on mobile data
     /// or on this Wi-Fi network. The scan then downloads nothing to size a photo.
     static var lowDataMode: Bool { pathMonitor.currentPath.isConstrained }
+
     /// What sizing a matched photo's original found.
     enum OriginalCheck {
         case fits(bytes: Int, downloaded: Bool)
@@ -931,6 +1064,7 @@ extension ViewController {
         /// Only in iCloud, and not downloaded because Low Data Mode is on.
         case lowData
     }
+
     /// Sizes a matched photo's original, so the grid shows only photos that can be
     /// sent as they are.
     ///
@@ -952,8 +1086,10 @@ extension ViewController {
             }
         }
     }
+
     /// The types the grid takes turns between, in this order.
     static let gridTurns: [PhotoType] = [.front, .side, .selfie]
+
     /// The order the grid is shown in once the scan ends: each type closest first,
     /// then taking turns — front, side, selfie, front, side, selfie.
     ///
@@ -977,10 +1113,12 @@ extension ViewController {
         let placed = Set(ordered)
         return ordered + ids.filter { !placed.contains($0) }
     }
+
     /// How far back the search may look. The SDK clamps this before it sends it,
     /// but a host is free to call in with anything, and neither a crash nor a scan
     /// that silently matches nothing is an acceptable answer to a bad number.
     static let monthsBackRange = 1...36
+
     /// Scans the whole window in one pass.
     ///
     /// Every photo inside `monthsBack` is examined, and matches stream to the web
@@ -991,7 +1129,9 @@ extension ViewController {
         if months != monthsBack {
             print("\u{26a0}\u{fe0f} monthsBack \(monthsBack) is out of range — using \(months)")
         }
+
         let options = PHFetchOptions()
+
         // No date filter at all under limited access. PhotoKit only returns the
         // subset the user hand-picked, so the set is already bounded by their own
         // choice and a date range bounds nothing on top of that — all it does is
@@ -1013,6 +1153,7 @@ extension ViewController {
             options.predicate = NSPredicate(format: "creationDate >= %@", from as NSDate)
         }
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+
         // The shopper's own library only — not shared albums, which are other
         // people's photos — and no screenshots: a screenshot of a model passes every
         // other check. Counted before the screenshot filter, so the log says how many
@@ -1024,31 +1165,39 @@ extension ViewController {
         options.predicate = options.predicate.map {
             NSCompoundPredicate(andPredicateWithSubpredicates: [$0, noScreenshots])
         } ?? noScreenshots
+
         let assets = PHAsset.fetchAssets(with: .image, options: options)
         let total = assets.count
+
         // Visible-to-us count with no date filter. If this is 0 the problem is
         // access; if it is large while `total` is 0 the problem is the date range.
         let visible = PHAsset.fetchAssets(with: .image, options: nil).count
         let window = isLimitedAccess ? "everything you shared" : "the last \(months) months"
         print("\u{1f4f8} \(total) photos in \(window) (\(visible) visible in total\(isLimitedAccess ? ", limited access" : ""), \(withScreenshots - total) screenshots skipped)")
         logSensitivityPolicy()
+
         guard total > 0 else {
             sendToWeb(["type": "onGalleryScanComplete",
                        "payload": ["assetIds": [], "limited": isLimitedAccess]])
             return
         }
+
         let startedAt = Date()
+
         // Captured once. Anything that resets the flow — a reload, a new scan,
         // starting over — moves scanGeneration past this and ends the loop below.
         let generation = scanGeneration
+
         // A no-op unless eval mode is on and the answer-key album exists.
         let evalLabels = loadEvalLabels()
+
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var matchedIds: [String] = []
             // Score and type per match, for the order the grid ends up in — see `gridOrder`.
             var matchScores: [String: (distance: Float, type: PhotoType)] = [:]
             var eval = ScanEval(labels: evalLabels)
             var lastReport = Date.distantPast
+
             // Per-gate tallies — which stage a disappointing result came from.
             var noImage = 0
             // Scanned from the phone's smaller copy, the full photo being in iCloud.
@@ -1067,11 +1216,13 @@ extension ViewController {
             var sized = 0
             var downloadedToSize = 0
             var sizingSeconds = 0.0
+
             // What the matches cover, for the summary below. Internal: none of it
             // reaches the web layer, which derives the coverage row from what the
             // user has actually selected.
             var found: [PhotoType: Int] = [:]
             var examined = 0
+
             // Photos whose full version is in iCloud and whose thumbnail looks like a
             // selfie, with their scan position. Downloaded and examined after the
             // local pass, most recent first — see `cloudDownloadCap`.
@@ -1080,16 +1231,19 @@ extension ViewController {
             // Second head-to-toe checks at the larger render — see `lastBodyRetry`.
             var bodyRetried = 0
             var bodyRescued = 0
+
             // One loaded photo through every gate. Shared by the local pass and the
             // iCloud pass, so a downloaded photo faces exactly the same checks.
             func examine(_ asset: PHAsset, _ image: UIImage, n: Int) {
                     // Read before anything else loads: the photo is already upright.
                     let wasRotated = self?.lastLoadRotated ?? false
                     if self?.lastLoadLocalCopy == true { localCopies += 1 }
+
                     // Delivered dimensions, not the requested targetSize — PHImageManager
                     // treats that as a hint.
                     let px = image.cgImage.map { "\($0.width)x\($0.height)" } ?? "?"
                     let orient = Self.orientationName(image.imageOrientation)
+
                     guard let outcome = self?.matchPerson(in: image, asset: asset) else { return }
                     let metrics = self?.lastFaceMetrics
                     if let retry = self?.lastBodyRetry {
@@ -1099,27 +1253,33 @@ extension ViewController {
                     }
                     // Set by the size check when a match's original fits.
                     var originalBytes: Int?
+
                     switch outcome {
                     case .noFace:
                         noFace += 1
                         eval.note(asset, image: image, rotated: wasRotated, gate: .noFace)
                         if Self.verboseLogging { print("  ○  [\(n)] no face             \(px) \(orient)") }
+
                     case .group(let faceCount):
                         groupSkipped += 1
                         eval.note(asset, image: image, rotated: wasRotated, gate: .group)
                         if Self.verboseLogging { print("  \u{1f465} [\(n)] group (\(faceCount) faces) — skipped   \(px) \(orient)") }
+
                     case .faceTooSmall(let pixels):
                         tooSmall += 1
                         eval.note(asset, image: image, rotated: wasRotated, gate: .faceTooSmall, metrics: metrics)
                         if Self.verboseLogging { print("  \u{1f50e} [\(n)] face too small (\(pixels)px)   \(px) \(orient)") }
+
                     case .otherPeople(let body):
                         otherPeople += 1
                         eval.note(asset, image: image, rotated: wasRotated, gate: .otherPeople, body: body, metrics: metrics)
                         if Self.verboseLogging { print("  \u{1f465} [\(n)] \(body.people) people — skipped   \(px) \(orient)") }
+
                     case .notFullBody(let body):
                         notFullBody += 1
                         eval.note(asset, image: image, rotated: wasRotated, gate: .notFullBody, body: body, metrics: metrics)
                         if Self.verboseLogging { print("  \u{1f9cd} [\(n)] not head to toe (head \(body.headSeen), ankles \(body.ankles), span \(String(format: "%.2f", body.span)), feet room \(String(format: "%.3f", body.footRoom)))   \(px) \(orient)") }
+
                     case .scored(let distances, let facePixels, let body, let type, let profile):
                         // A list, not a value, so turning off the single-face gate
                         // does not silently change what is logged.
@@ -1127,11 +1287,13 @@ extension ViewController {
                             .map { String(format: "%.3f", $0) }
                             .joined(separator: " ")
                         let distance = distances.min()!
+
                         // A face in profile against a front-facing selfie gets more room; a
                         // selfie, whose own matches score low, gets less.
                         let cutoff = profile ? Self.profileMatchThreshold
                             : type == .selfie ? Self.selfieMatchThreshold
                             : Self.matchThreshold
+
                         if distance >= cutoff {
                             noMatch += 1
                             eval.note(asset, image: image, rotated: wasRotated, gate: .noMatch, distance: distance,
@@ -1179,11 +1341,13 @@ extension ViewController {
                             eval.note(asset, image: image, rotated: wasRotated, gate: .grid, distance: distance,
                                       type: type, body: body, metrics: metrics,
                                       fullRes: self?.lastCropFullRes, originalBytes: originalBytes)
+
                             // Kept so the tap that follows does not reload the photo
                             // and re-run pose detection for answers already in hand.
                             ScanAnalysisStore.store(ScanAnalysis(type: type, body: body),
                                                     id: asset.localIdentifier)
                             found[type, default: 0] += 1
+
                             // Streamed as found so the grid fills during the scan.
                             // Only the id travels; the page fetches its own pixels.
                             let matchedId = asset.localIdentifier
@@ -1205,7 +1369,9 @@ extension ViewController {
                             if Self.verboseLogging { print("  ✅ [\(n)] MATCH     d=\(String(format: "%.3f", distance)) cut=\(String(format: "%.2f", cutoff))  \(px) \(orient)  face=\(facePixels)px ref=\(self?.lastReferenceWidth ?? 0) joints=\(body.lowerJoints) type=\(type.rawValue) shoulders=\(body.shoulderSpread.map { String(format: "%.2f", $0) } ?? "–") original=\((originalBytes ?? 0) / 1024)KB  [\(scores)]") }
                         }
                     }
+
             }
+
             for index in 0..<total {
                 // Returning here abandons the whole scan: no further matches, no
                 // progress, and no completion message. A superseded scan that still
@@ -1214,10 +1380,13 @@ extension ViewController {
                     print("\u{1f6d1} Scan superseded — stopping at \(index) of \(total)")
                     return
                 }
+
                 autoreleasepool {
                     let asset = assets.object(at: index)
                     let n = index + 1
+
                     examined += 1
+
                     guard let image = self?.loadPhoto(asset: asset) else {
                         let note = self?.lastLoadNote ?? ""
                         if note.hasPrefix("in iCloud") { cloudOnly += 1 }
@@ -1234,6 +1403,7 @@ extension ViewController {
                         return
                     }
                     examine(asset, image, n: n)
+
                     // Throttled by time, not photo count: per-photo cost varies too
                     // much for "every Nth" to give a predictable update rate.
                     if Date().timeIntervalSince(lastReport) > 0.25 || n == total {
@@ -1245,6 +1415,7 @@ extension ViewController {
                     }
                 }
             }
+
             // ---- iCloud pass -------------------------------------------------
             // The selfie-shaped thumbnails, downloaded small and examined like any
             // other photo. Bounded three ways: Wi-Fi only, `cloudDownloadCap`
@@ -1293,18 +1464,24 @@ extension ViewController {
                     }
                 }
             }
+
             let elapsed = Date().timeIntervalSince(startedAt)
             let rate = Double(examined) / max(elapsed, 0.001)
+
             // Matches streamed in date order; the finished list goes back best-first.
             // Tiles are locked while the first scan runs, so the one re-order lands
             // before a finger can be on one.
             let ordered = Self.gridOrder(matchedIds, scores: matchScores)
+
             // Built here, off the main thread. The grid is passed in the order the
             // web will show it, because that order is what "the top" means.
             let evalReport = eval.finish(grid: ordered)
+
             DispatchQueue.main.async {
                 guard self?.scanGeneration == generation else { return }
+
                 print("""
+
                 ==============================
                 SCAN COMPLETE
                 ==============================
@@ -1327,8 +1504,10 @@ extension ViewController {
                 MATCHED     \(matchedIds.count)   (selfie \(found[.selfie, default: 0]), front \(found[.front, default: 0]), side \(found[.side, default: 0]))
                 elapsed     \(String(format: "%.1f", elapsed))s  (\(String(format: "%.0f", rate))/s)
                 ==============================
+
                 """)
                 if let evalReport { print(evalReport) }
+
                 self?.sendToWeb(["type": "onGalleryScanComplete",
                                  "payload": ["assetIds": ordered,
                                              "limited": self?.isLimitedAccess ?? false,
@@ -1342,6 +1521,7 @@ extension ViewController {
             }
         }
     }
+
     /// The answer-key album's photo ids, or nil when eval mode is off or there is
     /// no such album. Nil switches `ScanEval` off entirely.
     /// The selfie to match against: the saved one in eval mode, otherwise the one
@@ -1359,6 +1539,7 @@ extension ViewController {
               let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
         else { return fresh }
         let url = dir.appendingPathComponent("swan-eval-selfie.jpg")
+
         if !evalResaveSelfie, let saved = try? Data(contentsOf: url) {
             let when = (try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate]) as? Date
             let stamp = DateFormatter()
@@ -1366,6 +1547,7 @@ extension ViewController {
             print("\u{1f9ea} matching against the saved eval selfie (from \(when.map(stamp.string) ?? "?"))")
             return "data:image/jpeg;base64," + saved.base64EncodedString()
         }
+
         guard let comma = fresh.firstIndex(of: ","),
               let data = Data(base64Encoded: String(fresh[fresh.index(after: comma)...])) else { return fresh }
         do {
@@ -1376,8 +1558,10 @@ extension ViewController {
         }
         return fresh
     }
+
     func loadEvalLabels() -> Set<String>? {
         guard Self.evalMode else { return nil }
+
         let options = PHFetchOptions()
         options.predicate = NSPredicate(format: "title == %@", Self.evalAlbumTitle)
         guard let album = PHAssetCollection.fetchAssetCollections(with: .album, subtype: .any,
@@ -1385,6 +1569,7 @@ extension ViewController {
             print("\u{1f9ea} eval mode is on, but there is no album named \"\(Self.evalAlbumTitle)\" — nothing will be measured")
             return nil
         }
+
         var ids = Set<String>()
         PHAsset.fetchAssets(in: album, options: nil).enumerateObjects { asset, _, _ in
             ids.insert(asset.localIdentifier)
@@ -1396,12 +1581,14 @@ extension ViewController {
         return ids
     }
 }
+
 // MARK: - Matching evaluation (debug only)
 //
 // Answers one question with numbers rather than by eye: are the photos reaching the
 // grid actually of the user? A tester puts every photo that *should* reach it into an
 // album, and each scan is scored against that album. Nothing here changes what the
 // grid shows, and nothing leaves the phone.
+
 /// Face numbers that no gate uses yet, recorded so the next gate can be chosen
 /// from data rather than guessed.
 struct FaceMetrics {
@@ -1414,18 +1601,21 @@ struct FaceMetrics {
     /// Vision's 0–1 capture quality. Apple positions it for comparing captures of
     /// the *same* person, so read it as a ranking hint, not an absolute bar.
     let quality: Float?
+
     /// One extra Vision pass — the quality request — on a handler that already
     /// holds the image, so the photo is not decoded a second time.
     init(_ face: VNFaceObservation, handler: VNImageRequestHandler) {
         let request = VNDetectFaceCaptureQualityRequest()
         request.inputFaceObservations = [face]
         try? handler.perform([request])
+
         ratio = face.boundingBox.width
         yaw = face.yaw?.doubleValue
         pitch = face.pitch?.doubleValue
         quality = request.results?.first?.faceCaptureQuality
     }
 }
+
 /// What decided one photo, in the order the scan applies them.
 enum EvalGate: String, CaseIterable {
     case noImage, noFace, group, faceTooSmall, otherPeople, notFullBody, noMatch, sensitive
@@ -1434,6 +1624,7 @@ enum EvalGate: String, CaseIterable {
     /// Passed everything and was shown to the user.
     case grid
 }
+
 /// One photo's fate in one scan.
 struct EvalRecord {
     let id: String
@@ -1460,30 +1651,37 @@ struct EvalRecord {
     /// The original file's size, for a photo that reached the grid.
     let originalBytes: Int?
 }
+
 /// Scores one scan against the answer-key album.
 ///
 /// A value, not a class: the scan loop owns one per run and hands a finished copy
 /// to the main thread, so nothing is shared between threads.
 struct ScanEval {
+
     /// The album's ids. Nil when eval mode is off or the album is missing, which
     /// makes every method below a no-op — so the scan loop needs no `if` of its own.
     let labels: Set<String>?
     private(set) var records: [EvalRecord] = []
+
     /// What a Muse needs. Mirrors `COVERAGE` in galleryConstants.ts — keep in step.
     static let coverageNeed: [(PhotoType, Int)] = [(.selfie, 1), (.front, 2), (.side, 2)]
+
     init(labels: Set<String>?) { self.labels = labels }
+
     /// How a date reads in the printed report — how Photos shows it.
     static let shownDate: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "d MMM yyyy HH:mm"
         return formatter
     }()
+
     /// How a date sits in the CSV — sortable.
     static let csvDate: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm"
         return formatter
     }()
+
     mutating func note(_ asset: PHAsset, image: UIImage?, rotated: Bool = false, gate: EvalGate,
                        distance: Float? = nil, type: PhotoType? = nil,
                        body: BodyCheck? = nil, metrics: FaceMetrics? = nil,
@@ -1506,15 +1704,18 @@ struct ScanEval {
             originalBytes: originalBytes
         ))
     }
+
     /// Builds the printed summary and writes the CSV. Nil when eval mode is off.
     ///
     /// `grid` is the order the shopper will see, because that order is what "the
     /// top" means — so this stays right once the grid is sorted.
     func finish(grid: [String]) -> String? {
         guard let labels else { return nil }
+
         let byId = Dictionary(records.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let labelledInWindow = records.filter(\.labelled).count
         let outsideWindow = labels.count - labelledInWindow
+
         // The matcher alone: every photo that reached scoring, whatever the
         // threshold then decided. Gates are excluded on purpose — they are
         // measured separately, per gate, below.
@@ -1522,6 +1723,7 @@ struct ScanEval {
         let correctDistances = scored.filter(\.labelled).compactMap(\.distance)
         let wrongDistances = scored.filter { !$0.labelled }.compactMap(\.distance)
         let auc = Self.auc(correct: correctDistances, wrong: wrongDistances)
+
         // Split by kind, because the two behave nothing alike: a close-up selfie
         // against the selfie reference is easy, a small full-length face is not —
         // and one combined number lets the easy half hide the hard one.
@@ -1534,9 +1736,11 @@ struct ScanEval {
         let selfieAUC = splitAUC([.selfie])
         let fullBodyAUC = splitAUC([.front, .side])
         let aucText = { (value: Double?) in value.map { String(format: "%.3f", $0) } ?? "n/a" }
+
         let top = grid.prefix(ViewController.evalTopN)
         let topCorrect = top.filter { labels.contains($0) }.count
         let gridCorrect = grid.filter { labels.contains($0) }.count
+
         // Whether the correct photos alone could complete a Muse. Precision can be
         // bought by showing nothing; this is what catches that.
         var have: [PhotoType: Int] = [:]
@@ -1547,6 +1751,7 @@ struct ScanEval {
         let coverage = Self.coverageNeed
             .map { "\($0.0.rawValue) \(have[$0.0, default: 0])/\($0.1)" }
             .joined(separator: ", ")
+
         // Per gate: what it rightly kept out, and what it wrongly threw away.
         let gates = EvalGate.allCases.filter { $0 != .grid }.map { gate -> String in
             let here = records.filter { $0.gate == gate }
@@ -1554,12 +1759,15 @@ struct ScanEval {
             let name = gate.rawValue.padding(toLength: 14, withPad: " ", startingAt: 0)
             return "  \(name)\(here.count - lost) wrong caught, \(lost) correct lost"
         }.joined(separator: "\n")
+
         let screenshots = records.filter(\.screenshot)
         let rank = Dictionary(grid.enumerated().map { ($1, $0 + 1) }, uniquingKeysWith: { first, _ in first })
         let csv = writeCSV(rank: rank)
+
         func ratio(_ part: Int, _ whole: Int) -> String {
             whole == 0 ? "n/a" : String(format: "%.2f", Double(part) / Double(whole))
         }
+
         // Every photo worth looking at, in terms a tester can find in Photos: the
         // grid tile by tile, and each of theirs that never reached it. Original size
         // beside scan width says whether a sharper crop was possible at all.
@@ -1584,6 +1792,7 @@ struct ScanEval {
         let typeDisagree = typeCompared.filter { r in
             r.metrics?.yaw.map { ViewController.headType(yaw: $0) != r.type } ?? false
         }
+
         let missedLines = records.filter { $0.labelled && $0.gate != .grid }.map { r in
             "  \(r.gate.rawValue.padding(toLength: 13, withPad: " ", startingAt: 0)) \(where_(r))"
         }
@@ -1591,7 +1800,9 @@ struct ScanEval {
         let missedBlock = missedLines.isEmpty
             ? "missed      none"
             : (["missed      \(missedLines.count) of yours never reached the grid"] + missedLines).joined(separator: "\n")
+
         return """
+
         ==============================
         MATCHING EVAL — "\(ViewController.evalAlbumTitle)"
         ==============================
@@ -1615,8 +1826,10 @@ struct ScanEval {
         csv         \(csv ?? "not written")
         note        eval mode adds a face-quality pass per photo — compare scan rates with it on both times
         ==============================
+
         """
     }
+
     /// The chance a correct photo scores closer than a wrong one, ties counting
     /// half: 0.5 is a coin toss, 1.0 separates them perfectly. Pairwise, because at
     /// a few thousand scored photos the plain loop is fast enough and easy to check.
@@ -1628,14 +1841,17 @@ struct ScanEval {
         }
         return wins / Double(correct.count * wrong.count)
     }
+
     /// Ids and numbers only — no pixels — into Documents, named so a reset does not
     /// delete it the way it does the debug crops. Pull it off the device the same
     /// way: Xcode > Window > Devices and Simulators > Download Container.
     private func writeCSV(rank: [String: Int]) -> String? {
         guard let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return nil }
+
         let stamp = DateFormatter()
         stamp.dateFormat = "yyyyMMdd-HHmmss"
         let name = "swan-eval-\(stamp.string(from: Date())).csv"
+
         let number = { (value: Double?) in value.map { String(format: "%.4f", $0) } ?? "" }
         var lines = ["id,gate,labelled,gridRank,distance,type,joints,ankles,headSeen,span,footRoom,people,shoulders,hips,headSays,faceRatio,yaw,pitch,quality,rotated,screenshot,fullRes,taken,original,renderWidth,originalKB"]
         for record in records {
@@ -1676,6 +1892,7 @@ struct ScanEval {
             ]
             lines.append((identity + bodyFields + faceFields).joined(separator: ","))
         }
+
         do {
             try lines.joined(separator: "\n")
                 .write(to: dir.appendingPathComponent(name), atomically: true, encoding: .utf8)
@@ -1686,6 +1903,7 @@ struct ScanEval {
         }
     }
 }
+
 /// Carries one answer out of the Task above.
 ///
 /// A captured `var` cannot be mutated from a `@Sendable` closure, so the result
@@ -1695,11 +1913,14 @@ struct ScanEval {
 private final class SensitivityResult: @unchecked Sendable {
     var value = false
 }
+
 // MARK: - Sensitive content
 //
 // Best-effort nudity filtering with Apple's on-device classifier. Everything
 // here is written around one fact: the check usually cannot run.
+
 extension ViewController {
+
     /// Prints whether the filter will actually do anything this scan.
     ///
     /// Not optional logging. A scan with no "sensitive" lines has two completely
@@ -1712,6 +1933,7 @@ extension ViewController {
               ? "\u{1f6ab} sensitivity filter: OFF — no entitlement, or Sensitive Content Warning is off in Settings"
               : "\u{1f6ab} sensitivity filter: on (\(policy))")
     }
+
     /// Whether Apple's classifier says this photo is sensitive.
     ///
     /// Opt-in per device (Settings > Privacy > Sensitive Content Warning) and off
@@ -1719,12 +1941,16 @@ extension ViewController {
     /// only on photos that already matched.
     func isSensitiveContent(_ image: UIImage) -> Bool {
         guard let cgImage = image.cgImage else { return false }
+
         let analyzer = SCSensitivityAnalyzer()
+
         // Apple's contract: check the policy and respect it. Analysing anyway is
         // not a supported path — this is a consent mechanism, not a feature flag.
         guard analyzer.analysisPolicy != .disabled else { return false }
+
         let semaphore = DispatchSemaphore(value: 0)
         let result = SensitivityResult()
+
         Task {
             defer { semaphore.signal() }
             do {
@@ -1736,11 +1962,14 @@ extension ViewController {
                 print("\u{26a0}\u{fe0f} Sensitive content analysis failed: \(error)")
             }
         }
+
         semaphore.wait()
         return result.value
     }
 }
+
 // MARK: - Captured photos
+
 /// Photos the user took inside the flow, held for the life of the flow.
 ///
 /// **Nothing here is written to the photo library.** The web layer takes a shot,
@@ -1762,6 +1991,7 @@ struct ScanAnalysis {
     let type: PhotoType
     let body: BodyCheck
 }
+
 /// What pose detection found of one person's body, and the one verdict drawn from it.
 ///
 /// A value rather than a joint count, so the scan, the tap and what the web is
@@ -1781,20 +2011,25 @@ struct BodyCheck {
     let footRoom: CGFloat
     /// People Vision's person detector finds in the whole photo, faces or not.
     let people: Int
+
     /// Someone besides the shopper is in the photo. One rule for the scan gate and
     /// what the web is told as `otherPeople`, so a photo cannot pass one and fail the other.
     var hasOthers: Bool { people > 1 }
+
     /// Shoulder and hip width across the photo against the torso's length: about 0.6
     /// facing the camera, under 0.35 side-on. Nil when the joints were not found.
     let shoulderSpread: CGFloat?
     let hipSpread: CGFloat?
+
     /// Which way the body faces, by the shoulders. Decides front or side whatever the
     /// head is doing; the head's turn is used only when this is nil.
     var bodyFacing: PhotoType? {
         shoulderSpread.map { $0 < ViewController.sideShoulderSpread ? .side : .front }
     }
+
     static let none = BodyCheck(lowerJoints: 0, ankles: 0, headSeen: false, span: 0, footRoom: 0, people: 0,
                                 shoulderSpread: nil, hipSpread: nil)
+
     /// Head to toe: the head in frame, enough ankles, a body tall enough in the frame
     /// to be the subject rather than someone in the background, and room below the
     /// ankles for the feet.
@@ -1804,6 +2039,7 @@ struct BodyCheck {
             && footRoom >= ViewController.minFootRoom * span
     }
 }
+
 /// Analyses produced during the scan, by asset id.
 ///
 /// The scan computes type and joints for every photo it matches, then throws them
@@ -1817,34 +2053,42 @@ struct BodyCheck {
 enum ScanAnalysisStore {
     private static var held: [String: ScanAnalysis] = [:]
     private static let lock = NSLock()
+
     static func store(_ analysis: ScanAnalysis, id: String) {
         lock.lock(); defer { lock.unlock() }
         held[id] = analysis
     }
+
     static func analysis(for id: String) -> ScanAnalysis? {
         lock.lock(); defer { lock.unlock() }
         return held[id]
     }
+
     static func removeAll() {
         lock.lock(); defer { lock.unlock() }
         held.removeAll()
     }
 }
+
 enum CaptureStore {
+
     /// How many photos the flow will hold. Generous for five slots with retakes,
     /// low enough that the store stays a rounding error against the app's budget.
     static let limit = 12
+
     /// Original capture JPEGs by id. `Data`, never `UIImage`: a decoded
     /// 1600x1600 is ~10MB, so twelve decoded would be 120MB — the exact problem
     /// this store exists to avoid.
     private static var held: [String: Data] = [:]
     private static var order: [String] = []
+
     /// Reads arrive on two background queues and writes on main, so this is not a
     /// place to follow the rest of the file's unsynchronised habit: a torn `Int`
     /// like `scanGeneration` is harmless, a Dictionary mutated during a concurrent
     /// read corrupts the heap. Held only across the dictionary access — `Data` is
     /// a value type, so decoding happens outside.
     private static let lock = NSLock()
+
     /// False when the store is full. Refusing beats evicting: an evicted photo is
     /// still on screen looking selectable, and the user finds out when the tile
     /// breaks.
@@ -1855,19 +2099,23 @@ enum CaptureStore {
         held[id] = data
         return true
     }
+
     static func data(for id: String) -> Data? {
         lock.lock(); defer { lock.unlock() }
         return held[id]
     }
+
     static func removeAll() {
         lock.lock(); defer { lock.unlock() }
         held.removeAll()
         order.removeAll()
     }
+
     static var count: Int {
         lock.lock(); defer { lock.unlock() }
         return held.count
     }
+
     /// The held bytes at a requested size.
     ///
     /// Returns them untouched when nothing needs shrinking — a capture already
@@ -1877,8 +2125,10 @@ enum CaptureStore {
         guard let image = UIImage(data: data) else { return nil }
         let longest = max(image.size.width, image.size.height)
         guard longest > maxPixel else { return data }
+
         let scale = maxPixel / longest
         let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+
         let format = UIGraphicsImageRendererFormat.default()
         format.scale = 1
         let resized = UIGraphicsImageRenderer(size: size, format: format).image { _ in
@@ -1887,16 +2137,21 @@ enum CaptureStore {
         return resized.jpegData(compressionQuality: quality)
     }
 }
+
 // MARK: - Thumbnails
+
 /// Shared by both delivery paths so a photo looks identical however it arrives.
 enum Thumbnail {
+
     /// Grid tiles. Small and fast — dozens are requested at once.
     static let gridPixels: CGFloat = 256
     static let gridQuality: CGFloat = 0.7
+
     /// A large render, for the `?size=full` display path and for photos taken in the
     /// flow. Library photos are uploaded as their original file — see `Original`.
     static let fullPixels: CGFloat = 1600
     static let fullQuality: CGFloat = 0.85
+
     /// JPEG bytes for an id, or nil if it cannot be read.
     ///
     /// The id is a `PHAsset.localIdentifier`, or one of the ids `CaptureStore`
@@ -1926,13 +2181,16 @@ enum Thumbnail {
                   : "  🖼 served capture \(localIdentifier) — \(rendered!.count / 1024)KB at \(Int(maxPixel))px")
             return rendered
         }
+
         guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [localIdentifier],
                                               options: nil).firstObject else { return nil }
+
         let options = PHImageRequestOptions()
         options.deliveryMode = .highQualityFormat
         options.resizeMode = .exact
         options.isNetworkAccessAllowed = allowNetwork
         options.isSynchronous = true
+
         var data: Data?
         PHImageManager.default().requestImage(
             for: asset,
@@ -1950,6 +2208,7 @@ enum Thumbnail {
         return data
     }
 }
+
 /// One streamed read, from the two queues that touch it.
 ///
 /// `requestData` delivers chunks and its completion on PhotoKit's own queue
@@ -1967,6 +2226,7 @@ private final class ReadState {
     private var failed = false
     private var done = false
     private let lock = NSLock()
+
     /// Counts the chunk, and keeps it only when `keep` is set — the scan sizes an
     /// original without holding any of it. True once past the cap, so the read can
     /// stop there rather than download the rest.
@@ -1984,6 +2244,7 @@ private final class ReadState {
         if keep { collected.append(chunk) }
         return false
     }
+
     func finish(failed didFail: Bool) {
         lock.lock(); defer { lock.unlock() }
         guard !done else { return }
@@ -1991,11 +2252,13 @@ private final class ReadState {
         failed = didFail
         if didFail { collected.removeAll(keepingCapacity: false) }
     }
+
     func result() -> (data: Data, count: Int, overCap: Bool, failed: Bool) {
         lock.lock(); defer { lock.unlock() }
         return (collected, counted, overCap, failed)
     }
 }
+
 /// The photo's own file, as the camera wrote it.
 ///
 /// `Thumbnail.jpeg` goes through `requestImage`, which hands back a *decoded
@@ -2007,6 +2270,7 @@ private final class ReadState {
 /// the scan hides any photo whose original is over the cap or cannot be read, and
 /// an upload that still meets one reports the reason as a failure.
 enum Original {
+
     /// How much of one file we will carry.
     ///
     /// The number that matters is what it costs in the page: at the cap a file is
@@ -2015,19 +2279,23 @@ enum Original {
     /// one. Each half of a Live Photo is measured separately, well under the
     /// server's 25MB per register request.
     static let byteCap = 10 * 1024 * 1024
+
     /// How long an upload waits for one file. Comfortably inside the web layer's own
     /// 30s deadline for a photo, so a stalled iCloud download is answered by us
     /// rather than by the page giving up.
     static let readTimeout: DispatchTimeInterval = .seconds(20)
+
     /// How long the scan waits to size one iCloud-only original. Shorter than an
     /// upload: the shopper is waiting on the scan, and a photo that cannot be sized
     /// in time is simply hidden.
     static let sizeTimeout: DispatchTimeInterval = .seconds(10)
+
     /// What marks the paired half of a Live Photo, appended to the asset id.
     ///
     /// The two halves travel as two uploads sharing a base id, and the service
     /// pairs them by stripping this. It marks the *role*, not the format.
     static let videoSuffix = ".mov"
+
     /// Why an original cannot be sent. Reported to the web layer, which counts the
     /// photo as failed — there is nothing else to send.
     enum Unavailable: String, Error {
@@ -2040,12 +2308,14 @@ enum Original {
         /// a poor connection.
         case tooSlow
     }
+
     struct Bytes {
         let data: Data
         /// From the resource's UTI — `image/heic` for most modern photos. The
         /// presigned PUT signs for whatever this says, so it has to be right.
         let mime: String
     }
+
     /// The resource's bytes, for upload. `allowNetwork` fetches an iCloud-offloaded
     /// original: the handful of photos the shopper picked are worth the download.
     static func bytes(for asset: PHAsset,
@@ -2054,6 +2324,7 @@ enum Original {
         read(asset, allowNetwork: allowNetwork, type: type, keep: true, timeout: readTimeout)
             .map { Bytes(data: $0.data, mime: $0.mime) }
     }
+
     /// The original's size in bytes, counted as it streams and kept nowhere — no
     /// memory held, nothing written by us. Stops the moment it passes the cap, so an
     /// iCloud photo is downloaded no further than that.
@@ -2061,6 +2332,7 @@ enum Original {
         read(asset, allowNetwork: allowNetwork, type: .photo, keep: false, timeout: sizeTimeout)
             .map { $0.count }
     }
+
     /// One streamed read of the resource, **abandoned the moment the running total
     /// crosses the cap** — so a 75MB ProRAW costs `byteCap` at most and never the
     /// file. `PHAssetResource` does not publicly expose a size, so counting as it
@@ -2077,10 +2349,13 @@ enum Original {
         let edited: PHAssetResourceType = type == .photo ? .fullSizePhoto : .fullSizePairedVideo
         guard let resource = resources.first(where: { $0.type == edited })
                 ?? resources.first(where: { $0.type == type }) else { return .failure(.unreadable) }
+
         let options = PHAssetResourceRequestOptions()
         options.isNetworkAccessAllowed = allowNetwork
+
         let state = ReadState()
         let done = DispatchSemaphore(value: 0)
+
         let request = PHAssetResourceManager.default().requestData(
             for: resource,
             options: options,
@@ -2093,8 +2368,10 @@ enum Original {
                 done.signal()
             }
         )
+
         let waited = done.wait(timeout: .now() + timeout)
         let (collected, count, overCap, failed) = state.result()
+
         if overCap {
             PHAssetResourceManager.default().cancelDataRequest(request)
             state.finish(failed: true)
@@ -2108,8 +2385,10 @@ enum Original {
         // With network access off this is an asset that lives only in iCloud;
         // with it on, a download that did not complete.
         if failed || count == 0 { return .failure(.unreadable) }
+
         return .success((collected, count, mime(for: resource)))
     }
+
     /// The resource's UTI as a MIME type. Falls back to JPEG rather than guessing
     /// wrong: a declared type the bytes do not match breaks the presigned PUT.
     static func mime(for resource: PHAssetResource) -> String {
@@ -2123,7 +2402,9 @@ enum Original {
         }
     }
 }
+
 extension ViewController {
+
     /// Sends one photo to the web layer as a data URI, for upload.
     ///
     /// `fetch("swan-photo://…")` is refused by WebKit before the scheme handler
@@ -2142,10 +2423,12 @@ extension ViewController {
             }
             let startedAt = Date()
             func ms() -> Int { Int(Date().timeIntervalSince(startedAt) * 1000) }
+
             // The paired half of a Live Photo, asked for under the still's id with
             // a suffix. Best effort: a failure here means the still goes up alone.
             let wantsVideo = id.hasSuffix(Original.videoSuffix)
             let assetId = wantsVideo ? String(id.dropLast(Original.videoSuffix.count)) : id
+
             // A photo taken inside the flow has no asset and no original — it is
             // already a capture at upload size, sent as held.
             if !wantsVideo, CaptureStore.data(for: assetId) != nil {
@@ -2159,11 +2442,13 @@ extension ViewController {
                 reply(["id": id, "dataURI": "data:image/jpeg;base64," + data.base64EncodedString(), "original": false])
                 return
             }
+
             guard let asset = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: nil).firstObject else {
                 print("  \u{274c} no photo for \(assetId)")
                 reply(["id": id, "error": "unavailable"])
                 return
             }
+
             if wantsVideo {
                 guard asset.mediaSubtypes.contains(.photoLive) else {
                     print("  \u{274c} no paired video for \(assetId)")
@@ -2182,6 +2467,7 @@ extension ViewController {
                 }
                 return
             }
+
             let isLive = asset.mediaSubtypes.contains(.photoLive)
             switch Original.bytes(for: asset, allowNetwork: true) {
             case .success(let original):
@@ -2197,6 +2483,7 @@ extension ViewController {
             }
         }
     }
+
     /// Reports how the person is positioned in one photo.
     ///
     /// Both fields are required by the web layer: a reply missing `type` or
@@ -2210,8 +2497,11 @@ extension ViewController {
             sendAnalysis(id: id, captured: false, body: cached.body, type: cached.type, cached: true)
             return
         }
+
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+
             guard let self = self else { return }
+
             // The only PhotoKit part. Everything past it works on a decoded image,
             // which is what lets a photo taken in the flow share the same analysis.
             guard
@@ -2222,6 +2512,7 @@ extension ViewController {
                 let image = self.loadPhoto(asset: asset)
             else {
                 print("❌ analyse FAILED \(id)")
+
                 DispatchQueue.main.async {
                     self.sendToWeb([
                         "type": "onGalleryPhotoAnalysis",
@@ -2231,11 +2522,14 @@ extension ViewController {
                         ]
                     ])
                 }
+
                 return
             }
+
             self.analyse(image: image, id: id, captured: false)
         }
     }
+
     /// The analysis itself, for a photo from anywhere.
     ///
     /// Must be called off the main thread — Vision runs two detection passes here.
@@ -2252,18 +2546,24 @@ extension ViewController {
             }
             return
         }
+
         let orientation = Self.cgOrientation(image.imageOrientation)
+
         // The same face-to-body tie as the scan, so a tapped or captured photo is
         // judged on the body under its own face.
         let face = self.largestFace(in: cgImage, orientation: orientation)
         let body = self.bodyCheck(in: cgImage, orientation: orientation, face: face?.boundingBox)
+
         // Front / Side classification
         let type = self.classifyPhotoType(in: image, body: body)
+
         // A captured photo is analysed once, here, and stored so the tap that
         // follows takes the same path as a scanned one.
         if captured { ScanAnalysisStore.store(ScanAnalysis(type: type, body: body), id: id) }
+
         sendAnalysis(id: id, captured: captured, body: body, type: type, cached: false)
     }
+
     /// The one place `onGalleryPhotoAnalysis` is built, so a cached verdict and a
     /// freshly computed one cannot describe themselves differently.
     func sendAnalysis(id: String, captured: Bool, body: BodyCheck, type: PhotoType, cached: Bool) {
@@ -2271,6 +2571,7 @@ extension ViewController {
         // reports false for, whatever `type` says. The same head-to-toe rule as the
         // scan gate, so a photo the scan let through is not refused on tap.
         let isFullBody = body.isHeadToToe
+
         print("""
         📸 PHOTO ANALYSIS\(captured ? " (captured)" : "")\(cached ? " (cached)" : "")
            ID: \(id)
@@ -2279,6 +2580,7 @@ extension ViewController {
            Joints: \(body.lowerJoints)/4, ankles \(body.ankles), head \(body.headSeen), span \(String(format: "%.2f", body.span)), feet room \(String(format: "%.3f", body.footRoom)), people \(body.people)
            Shoulders: \(body.shoulderSpread.map { String(format: "%.2f", $0) } ?? "not measured"), hips \(body.hipSpread.map { String(format: "%.2f", $0) } ?? "–") — type by \(body.bodyFacing == nil ? "head turn" : "shoulders")
         """)
+
         let analysis: [String: Any] = [
             "assetId": id,
             "captured": captured,
@@ -2289,6 +2591,7 @@ extension ViewController {
             "otherPeople": body.hasOthers,
             "type": type.rawValue
         ]
+
         DispatchQueue.main.async {
             self.sendToWeb([
                 "type": "onGalleryPhotoAnalysis",
@@ -2296,6 +2599,7 @@ extension ViewController {
             ])
         }
     }
+
     /// Takes one photo the user shot in the flow, then analyses it.
     ///
     /// The bytes are held in memory only — see `CaptureStore`. The reply is the
@@ -2305,6 +2609,7 @@ extension ViewController {
     func storeCapture(id: String, dataURI: String) {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
+
             func fail(_ reason: String) {
                 print("❌ capture FAILED \(id) — \(reason)")
                 DispatchQueue.main.async {
@@ -2314,10 +2619,12 @@ extension ViewController {
                     ])
                 }
             }
+
             guard !id.isEmpty, let image = Self.image(fromDataURI: dataURI) else {
                 fail("unreadable")
                 return
             }
+
             // The bytes as sent, not a re-encode: the web side already captured at
             // upload size and quality, so anything else here loses a generation.
             guard let comma = dataURI.firstIndex(of: ","),
@@ -2325,14 +2632,18 @@ extension ViewController {
                 fail("unreadable")
                 return
             }
+
             guard CaptureStore.store(data, id: id) else {
                 fail("store-full")
                 return
             }
+
             print("📷 stored capture \(id) — \(data.count / 1024)KB, \(CaptureStore.count)/\(CaptureStore.limit) held")
             self.analyse(image: image, id: id, captured: true)
         }
     }
+
+
     /// Which way the person is facing.
     ///
     /// `unknown` is not a failure — Vision finds no face in a back view. Read it
@@ -2349,7 +2660,9 @@ extension ViewController {
     /// yaw whichever camera took it.
     func classifyPhotoType(in image: UIImage, body: BodyCheck) -> PhotoType {
         guard let cgImage = image.cgImage else { return .unknown }
+
         let faceRequest = VNDetectFaceRectanglesRequest()
+
         // The image's real orientation, the same as every other Vision call here.
         // At `.up` a rotated portrait is analysed sideways and no face is found,
         // which reports `unknown` — and the web layer rejects that, so a photo the
@@ -2360,18 +2673,24 @@ extension ViewController {
             options: [:]
         )
         try? handler.perform([faceRequest])
+
         guard let face = faceRequest.results?.first else { return .unknown }
+
         let ratio = Self.faceRatio(boxWidth: face.boundingBox.width, in: cgImage)
+
         // Yaw is read once and logged on both branches. A selfie is accepted at any
         // angle — it is a face reference, not a pose — but without the number in
         // the log there is no way to tell a head-on selfie from a sharply turned
         // one, which is the difference between a good reference and a poor one.
         let yaw = face.yaw?.doubleValue
+
         let turn = yaw.map { String(format: "%.3f", $0) } ?? "n/a"
         print("🔬 FACE \(String(format: "%.2f", ratio)) of frame, yaw \(turn), joints \(body.lowerJoints)/4, head to toe \(body.isHeadToToe)")
+
         // The decision itself lives in one place, shared with the scan.
         return Self.photoType(faceRatio: ratio, yaw: yaw, body: body)
     }
+
     /// Base64 fallback for one photo the custom scheme could not load.
     ///
     /// One per request, not a batch: a cap silently truncated large result sets.
@@ -2382,8 +2701,10 @@ extension ViewController {
     /// PhotoKit requests at once, and analysis — which has a 15s deadline on the
     /// web side — ends up queued behind them.
     static let thumbnailQueue = DispatchQueue(label: "co.getswan.gallery.thumbnails")
+
     func sendThumbnail(for id: String) {
         guard !id.isEmpty else { return }
+
         Self.thumbnailQueue.async { [weak self] in
             // iCloud allowed: a grid tile is ~20KB and only ever displayed.
             // The *scan* never downloads — walking a library over someone's
@@ -2403,6 +2724,7 @@ extension ViewController {
                 }
                 return
             }
+
             DispatchQueue.main.async {
                 // Sent in the same `thumbs` array shape as before, so the web side has
                 // one code path whether one arrives or many.
@@ -2412,6 +2734,7 @@ extension ViewController {
             }
         }
     }
+
     /// Drops everything held for one run of the flow. Called on GALLERY_RESET and
     /// at the top of every scan, so a second scan inherits nothing from the first.
     func resetScanState() {
@@ -2428,6 +2751,7 @@ extension ViewController {
         ScanAnalysisStore.removeAll()
         clearDebugImages()
     }
+
     /// Removes the PNGs from the previous run. They are written to Documents and
     /// nothing else ever deletes them, so without this the folder accumulates
     /// crops from every scan the app has ever done and it stops being obvious
@@ -2435,41 +2759,51 @@ extension ViewController {
     func clearDebugImages() {
         guard let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
               let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return }
+
         for name in names where name.hasPrefix("swan-debug-") {
             try? FileManager.default.removeItem(at: dir.appendingPathComponent(name))
         }
     }
 }
+
 // MARK: - Custom scheme handler
+
 /// Serves `swan-photo://thumb?id=<percent-encoded localIdentifier>`.
 ///
 /// A localIdentifier contains slashes ("ABC.../L0/001"), so it travels as a query
 /// parameter rather than a path component.
 final class PhotoSchemeHandler: NSObject, WKURLSchemeHandler {
+
     /// WebKit calls `stop` when a load is cancelled — an <img> removed from the DOM,
     /// a navigation away — and messaging a stopped task raises an exception that
     /// takes the app down. Tracking live tasks is not optional here.
     private var live = Set<ObjectIdentifier>()
     private let lock = NSLock()
+
     private func isLive(_ task: WKURLSchemeTask) -> Bool {
         lock.lock(); defer { lock.unlock() }
         return live.contains(ObjectIdentifier(task))
     }
+
     private func retire(_ task: WKURLSchemeTask) {
         lock.lock(); defer { lock.unlock() }
         live.remove(ObjectIdentifier(task))
     }
+
     func webView(_ webView: WKWebView, start task: WKURLSchemeTask) {
         lock.lock(); live.insert(ObjectIdentifier(task)); lock.unlock()
+
         guard let url = task.request.url,
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let id = components.queryItems?.first(where: { $0.name == "id" })?.value else {
             finish(task, with: nil)
             return
         }
+
         // ?size=full is the large display render; anything else is a grid tile.
         let wantsFull = components.queryItems?
             .first(where: { $0.name == "size" })?.value == "full"
+
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let startedAt = Date()
             // Same split as the base64 fallback: a grid tile may be fetched from
@@ -2482,6 +2816,7 @@ final class PhotoSchemeHandler: NSObject, WKURLSchemeHandler {
                 allowNetwork: !wantsFull
             )
             let ms = Int(Date().timeIntervalSince(startedAt) * 1000)
+
             if wantsFull {
                 // Only logged for full renders — grid tiles arrive by the dozen and
                 // would drown everything else.
@@ -2489,19 +2824,24 @@ final class PhotoSchemeHandler: NSObject, WKURLSchemeHandler {
                       ? "  \u{274c} serve FAILED  \(id)  (\(ms)ms)"
                       : "  \u{2705} served \(data!.count / 1024)KB  \(id)  (\(ms)ms)")
             }
+
             DispatchQueue.main.async { self?.finish(task, with: data, url: url) }
         }
     }
+
     func webView(_ webView: WKWebView, stop task: WKURLSchemeTask) {
         retire(task)
     }
+
     private func finish(_ task: WKURLSchemeTask, with data: Data?, url: URL? = nil) {
         guard isLive(task) else { return }
         retire(task)
+
         guard let data = data, let url = url ?? task.request.url else {
             task.didFailWithError(URLError(.fileDoesNotExist))
             return
         }
+
         // Access-Control-Allow-Origin because the page is https and this response
         // is a different origin; without it the load is rejected before the bytes
         // are ever looked at.
@@ -2514,13 +2854,17 @@ final class PhotoSchemeHandler: NSObject, WKURLSchemeHandler {
                            "Access-Control-Allow-Origin": "*",
                            "Cache-Control": "max-age=300"]
         )!
+
         task.didReceive(response)
         task.didReceive(data)
         task.didFinish()
     }
 }
+
 // MARK: - Debug image dump
+
 extension ViewController {
+
     /// Saves a PNG into Documents. Pull the folder off the device with
     /// Xcode > Window > Devices and Simulators > select app > Download Container,
     /// then look inside AppData/Documents.
@@ -2532,6 +2876,7 @@ extension ViewController {
         let url = dir.appendingPathComponent("swan-debug-\(name).png")
         try? data.write(to: url)
     }
+
     /// EXIF orientation as a readable name. If photos arrive as anything other than
     /// `up`, face boxes are being computed in a rotated space while the crop runs
     /// on unrotated pixels — which silently crops the wrong region.
@@ -2549,8 +2894,11 @@ extension ViewController {
         }
     }
 }
+
 // MARK: - Image helpers
+
 extension ViewController {
+
     /// UIGraphicsImageRenderer rather than the older stack-based API: this runs on
     /// the scan's background queue, where per-thread context state is easy to get
     /// wrong.
@@ -2561,6 +2909,7 @@ extension ViewController {
             image.draw(in: CGRect(origin: .zero, size: size))
         }
     }
+
     /// A front-camera selfie is not necessarily oriented the way the user appears
     /// in someone else's photo, and the descriptor is not mirror-invariant — so the
     /// reference is kept both ways and the nearer one wins.
@@ -2576,8 +2925,11 @@ extension ViewController {
         return UIGraphicsGetImageFromCurrentImageContext()
     }
 }
+
 // MARK: - Vision helpers
+
 extension ViewController {
+
     /// Decodes a `data:image/jpeg;base64,...` string.
     static func image(fromDataURI uri: String) -> UIImage? {
         guard let comma = uri.firstIndex(of: ","),
@@ -2585,6 +2937,7 @@ extension ViewController {
         else { return nil }
         return UIImage(data: data).map(upright)
     }
+
     /// The photo redrawn so its pixels are the right way up.
     ///
     /// Vision is told the orientation and returns boxes for the upright picture, but
@@ -2598,18 +2951,22 @@ extension ViewController {
             image.draw(in: CGRect(origin: .zero, size: image.size))
         }
     }
+
     /// Render size for every photo in the scan. `minFacePixels` is expressed in
     /// these pixels, so the two must be changed together.
     static let loadPixels: CGFloat = 2048
+
     /// A face narrower than this, in pixels of the scan's render, is re-cropped from
     /// a larger render before it is printed. It is `faceNormalSize`: below it the crop
     /// is upscaled to 224 and reads as soft, which the descriptor scores as a
     /// different face; at or above it, extra pixels are thrown away by the resize.
     /// So in practice this is full-length photos, never selfies.
     static let fullResFaceBelow: CGFloat = 224
+
     /// The size of that second render. Capped rather than the whole original: a 48MP
     /// photo decoded in full is about 190MB, and this happens in the middle of a scan.
     static let fullResPixels: CGFloat = 4096
+
     /// Loads a photo big enough to crop a usable face from, at `loadPixels`.
     ///
     /// `.highQualityFormat` and `.exact` matter: `.fastFormat`/`.fast` hand back
@@ -2632,6 +2989,7 @@ extension ViewController {
         options.resizeMode = .exact
         options.isNetworkAccessAllowed = false
         options.isSynchronous = true
+
         // 2048, not 1024: a full-body photo has a small face by construction,
         // and more source pixels buy more accuracy than any threshold change.
         let target = CGSize(width: pixels, height: pixels)
@@ -2641,6 +2999,7 @@ extension ViewController {
             result = image
             inCloud = info?[PHImageResultIsInCloudKey] as? Bool ?? false
         }
+
         if result == nil {
             lastLoadNote = inCloud ? "in iCloud, no copy on the phone" : "not flagged as iCloud"
         }
@@ -2670,6 +3029,7 @@ extension ViewController {
                 if !degraded || cancelled || failed { done.signal() }
             }
             _ = done.wait(timeout: .now() + Self.localCopyWait)
+
             if let best, let cg = best.cgImage {
                 let longest = max(cg.width, cg.height)
                 if longest >= Self.minLocalCopyPixels {
@@ -2681,9 +3041,11 @@ extension ViewController {
                 }
             }
         }
+
         lastLoadRotated = result.map { $0.imageOrientation != .up } ?? false
         return result.map(Self.upright)
     }
+
     /// Downloads a reduced copy of a photo whose full version is in iCloud.
     ///
     /// Only the iCloud pass calls this, for the few photos its thumbnail filter
@@ -2697,6 +3059,7 @@ extension ViewController {
         options.resizeMode = .exact
         options.isNetworkAccessAllowed = true
         options.isSynchronous = false
+
         let done = DispatchSemaphore(value: 0)
         var result: UIImage?
         let request = PHImageManager.default().requestImage(for: asset, targetSize: CGSize(width: pixels, height: pixels),
@@ -2716,6 +3079,7 @@ extension ViewController {
         lastLoadRotated = result.map { $0.imageOrientation != .up } ?? false
         return result.map(Self.upright)
     }
+
     /// Whether a thumbnail shows one face filling the frame — the shape of a selfie,
     /// readable even at 120px. The same two rules the real selfie gate applies,
     /// `bystanderRatio` and `selfieFaceRatio`, so the filter cannot pick a photo the
@@ -2730,6 +3094,7 @@ extension ViewController {
         let company = faces.filter { $0.boundingBox.width >= mainWidth * Self.bystanderRatio }
         return company.count == 1 && Self.faceRatio(boxWidth: mainWidth, in: cgImage) >= Self.selfieFaceRatio
     }
+
     /// The largest face Vision finds, or nil.
     func largestFace(in cgImage: CGImage, orientation: CGImagePropertyOrientation) -> VNFaceObservation? {
         let request = VNDetectFaceRectanglesRequest()
@@ -2738,9 +3103,11 @@ extension ViewController {
             $0.boundingBox.width * $0.boundingBox.height < $1.boundingBox.width * $1.boundingBox.height
         }
     }
+
     /// Largest face in the image, cropped with padding.
     func croppedFace(from image: UIImage, padding: CGFloat = ViewController.facePadding) -> UIImage? {
         guard let cgImage = image.cgImage else { return nil }
+
         let request = VNDetectFaceRectanglesRequest()
         let handler = VNImageRequestHandler(
             cgImage: cgImage,
@@ -2748,11 +3115,14 @@ extension ViewController {
             options: [:]
         )
         try? handler.perform([request])
+
         guard let face = request.results?.max(by: {
             $0.boundingBox.width * $0.boundingBox.height < $1.boundingBox.width * $1.boundingBox.height
         }), let cropped = crop(cgImage, to: face.boundingBox, padding: padding) else { return nil }
+
         return UIImage(cgImage: cropped)
     }
+
     /// Why a photo did or did not produce a score.
     ///
     /// An enum rather than a tuple of optionals because these outcomes are mutually
@@ -2768,6 +3138,7 @@ extension ViewController {
         /// `profileMatchThreshold` instead of `matchThreshold`.
         case scored(distances: [Float], facePixels: Int, body: BodyCheck, type: PhotoType, profile: Bool)
     }
+
     /// Applies the eligibility gates, then compares the surviving face against the
     /// reference.
     ///
@@ -2780,6 +3151,7 @@ extension ViewController {
         // face, a group — must not carry the previous photo's retry into the log.
         lastBodyRetry = nil
         guard referencePrint != nil, let cgImage = image.cgImage else { return .noFace }
+
         let request = VNDetectFaceRectanglesRequest()
         let handler = VNImageRequestHandler(
             cgImage: cgImage,
@@ -2787,24 +3159,30 @@ extension ViewController {
             options: [:]
         )
         try? handler.perform([request])
+
         guard let allFaces = request.results, !allFaces.isEmpty else { return .noFace }
+
         // Faces too small beside the largest are bystanders, not company — see
         // `bystanderRatio`. They are also dropped from the matching below, so a tiny
         // face in the background neither rejects the photo nor gets a turn at
         // looking like the shopper.
         let mainFaceWidth = allFaces.map(\.boundingBox.width).max() ?? 0
         let faces = allFaces.filter { $0.boundingBox.width >= mainFaceWidth * Self.bystanderRatio }
+
         if Self.requireSingleFace && faces.count > 1 {
             return .group(faceCount: faces.count)
         }
+
         // Vision boxes are normalised, so this is the face's width in real pixels of
         // the render we loaded.
         let widest = faces.map { $0.boundingBox.width * CGFloat(cgImage.width) }.max() ?? 0
+
         // Recorded for `ScanEval`, not used by any gate yet: which of these separate
         // good matches from bad is what the evaluation is there to find out.
         if Self.evalMode, let face = faces.first {
             lastFaceMetrics = FaceMetrics(face, handler: handler)
         }
+
         // A larger render of the same photo, loaded at most once and only if asked
         // for: by the size gate below, or by the re-crop further down. Network off —
         // the scan never downloads, so with no larger copy on the phone this is nil.
@@ -2818,6 +3196,7 @@ extension ViewController {
             }
             return largerCache
         }
+
         // Too small here is not too small everywhere. Only when the original is big
         // enough to clear the floor is the larger render worth loading — so a photo
         // that is small in every copy costs nothing extra.
@@ -2828,24 +3207,29 @@ extension ViewController {
                   widestRatio * CGFloat(larger.width) >= Self.minFacePixels
             else { return .faceTooSmall(pixels: Int(widest)) }
         }
+
         // Ordered after the face gates deliberately — pose detection is the most
         // expensive request here, and this way it only runs on photos that already
         // have one usable face.
         var body = bodyCheck(in: cgImage, orientation: Self.cgOrientation(image.imageOrientation),
                              face: faces.first?.boundingBox)
+
         // Distances of every face in `source` to the reference nearest its size.
         // Nil when nothing could be printed. Defined here so the full-body gate
         // below can ask "is this the shopper?" before spending a larger render.
         func score(from source: CGImage) -> (distances: [Float], faceWidth: CGFloat, referenceWidth: CGFloat)? {
             let faceWidth = faces.map { $0.boundingBox.width * CGFloat(source.width) }.max() ?? widest
+
             // Compare like with like: a soft 120px face is measured against a reference
             // degraded to 120px, not against the sharp original. Sized from the crop
             // actually printed, so a re-cropped face meets a sharper reference too.
             guard let reference = nearestReference(for: faceWidth) else { return nil }
+
             var distances: [Float] = []
             for face in faces {
                 guard let cropped = crop(source, to: face.boundingBox),
                       let candidate = facePrint(fromFace: cropped) else { continue }
+
                 // Nearer of the reference and its mirror — see referencePrintMirrored.
                 var distance: Float = 0
                 guard (try? reference.print.computeDistance(&distance, to: candidate)) != nil else { continue }
@@ -2856,6 +3240,7 @@ extension ViewController {
                     }
                 }
                 distances.append(distance)
+
                 // Distance is in the filename, so the closest crops can be found and
                 // eyeballed without cross-referencing the console.
                 if debugCropsSaved < Self.debugCropLimit {
@@ -2867,6 +3252,7 @@ extension ViewController {
             guard !distances.isEmpty else { return nil }
             return (distances, faceWidth, reference.sourceWidth)
         }
+
         // A selfie has no lower body to find, so the full-body gate would reject
         // every one and none would reach the picker. Recognised by the same shape
         // the classifier uses — a face filling enough of the frame — from numbers
@@ -2876,6 +3262,7 @@ extension ViewController {
         if body.hasOthers {
             return .otherPeople(body: body)
         }
+
         let faceRatio = Self.faceRatio(boxWidth: faces.map(\.boundingBox.width).max() ?? 0, in: cgImage)
         let isSelfie = faceRatio >= Self.selfieFaceRatio
         if Self.requireFullBody && !isSelfie && !body.isHeadToToe {
@@ -2896,6 +3283,7 @@ extension ViewController {
             guard again.isHeadToToe else { return .notFullBody(body: body) }
             body = again
         }
+
         // Free: the ratio and the body check are already above, and `yaw` rides on
         // the observations this function detected for the match. `classifyPhotoType`
         // gets the same three numbers by running a second face pass over the same
@@ -2904,6 +3292,7 @@ extension ViewController {
         let type = Self.photoType(faceRatio: faceRatio, yaw: yaw, body: body)
         // The shoulders must have said side — a side by head turn alone does not count.
         let profile = type == .side && body.bodyFacing == .side && abs(yaw ?? 0) > Self.profileYaw
+
         // A small face is re-cropped from the larger render. Only photos that passed
         // every gate get here, so it is a handful per scan, and one rescued by the
         // size gate reuses the render already loaded. The face box is normalised, so
@@ -2917,10 +3306,12 @@ extension ViewController {
         lastReferenceWidth = Int(scored.referenceWidth)
         return .scored(distances: scored.distances, facePixels: Int(scored.faceWidth), body: body, type: type, profile: profile)
     }
+
     /// How far outside the face box a body's head points may sit and still make it
     /// that face's body, as a fraction of the box. Generous: the ears sit on the box
     /// edge, and a turned head moves the nose.
     static let bodyFaceMargin: CGFloat = 0.5
+
     /// What pose detection finds of the body: the head, the knees and ankles, and
     /// how much of the frame they span.
     ///
@@ -2936,6 +3327,7 @@ extension ViewController {
         peopleRequest.upperBodyOnly = false
         let handler = VNImageRequestHandler(cgImage: cgImage, orientation: orientation, options: [:])
         try? handler.perform([request, peopleRequest])
+
         // Bodies well under the largest are in the distance — see `bystanderRatio`.
         // Heights, not areas: a person side-on is narrow but no shorter.
         let tallest = peopleRequest.results?.map(\.boundingBox.height).max() ?? 0
@@ -2943,12 +3335,14 @@ extension ViewController {
         let nobody = BodyCheck(lowerJoints: 0, ankles: 0, headSeen: false, span: 0, footRoom: 0, people: people,
                                shoulderSpread: nil, hipSpread: nil)
         guard let bodies = request.results, !bodies.isEmpty else { return nobody }
+
         func seen(_ joints: [VNHumanBodyPoseObservation.JointName],
                   of body: VNHumanBodyPoseObservation) -> [VNRecognizedPoint] {
             joints.compactMap { try? body.recognizedPoint($0) }
                 .filter { $0.confidence >= Self.bodyJointConfidence }
         }
         let headJoints: [VNHumanBodyPoseObservation.JointName] = [.nose, .leftEye, .rightEye, .leftEar, .rightEar]
+
         // Face boxes and joints share Vision's normalised space, so the test is direct.
         var observation = bodies[0]
         if let face {
@@ -2961,15 +3355,18 @@ extension ViewController {
             else { return nobody }
             observation = best
         }
+
         let knees = seen([.leftKnee, .rightKnee], of: observation)
         let ankles = seen([.leftAnkle, .rightAnkle], of: observation)
         let head = seen(headJoints, of: observation)
+
         // Vision's y runs bottom to top, so the span is the highest head point less
         // the lowest ankle — and zero when either end is missing.
         var span: CGFloat = 0
         if let top = head.map(\.location.y).max(), let bottom = ankles.map(\.location.y).min() {
             span = max(0, top - bottom)
         }
+
         // The body's own turn: shoulders and hips across the photo, against the torso's
         // length. In pixels, because Vision normalises x and y to different sides.
         let sideways: Set<CGImagePropertyOrientation> = [.left, .right, .leftMirrored, .rightMirrored]
@@ -2990,6 +3387,7 @@ extension ViewController {
             guard let torso, let pa = pixel(a), let pb = pixel(b) else { return nil }
             return abs(pa.x - pb.x) / torso
         }
+
         return BodyCheck(lowerJoints: knees.count + ankles.count,
                          ankles: ankles.count,
                          headSeen: !head.isEmpty,
@@ -2999,37 +3397,46 @@ extension ViewController {
                          shoulderSpread: spread(.leftShoulder, .rightShoulder),
                          hipSpread: spread(.leftHip, .rightHip))
     }
+
     /// Face widths the reference is pre-degraded to, in pixels of the loaded render.
     /// Chosen to bracket what the gates actually let through: the floor is
     /// `minFacePixels`, the top is a close-up portrait.
     static let referenceScaleWidths: [CGFloat] = [120, 160, 210, 280, 380]
+
     /// Renders the reference face down to each ladder width and back up, so it
     /// carries the same loss a candidate of that size does.
     func buildReferenceScales(from faceCrop: UIImage) {
         let flipped = mirrored(faceCrop)
+
         referenceScales = Self.referenceScaleWidths.compactMap { width -> ScaledReference? in
             let size = CGSize(width: width, height: width)
+
             guard let degraded = resized(faceCrop, to: size),
                   let cg = degraded.cgImage,
                   let print0 = facePrint(fromFace: cg) else { return nil }
+
             let mirroredPrint = flipped
                 .flatMap { resized($0, to: size) }
                 .flatMap { $0.cgImage }
                 .flatMap { facePrint(fromFace: $0) }
+
             return ScaledReference(sourceWidth: width, print: print0, mirrored: mirroredPrint)
         }
     }
+
     /// The reference whose resolution is closest to this candidate's.
     func nearestReference(for faceWidth: CGFloat) -> ScaledReference? {
         referenceScales.min {
             abs($0.sourceWidth - faceWidth) < abs($1.sourceWidth - faceWidth)
         }
     }
+
     /// Every face crop is squared off to this before printing.
     ///
     /// Unnormalised, the same face at half size scored 0.595 against ~1.05 for a
     /// different person — most of the range was going on size rather than identity.
     static let faceNormalSize = CGSize(width: 224, height: 224)
+
     /// Margin around the face box before it is printed, as a fraction of the box.
     ///
     /// Was 0.25. FeaturePrint encodes background as readily as the face, and in a
@@ -3038,11 +3445,13 @@ extension ViewController {
     /// off the jaw and hairline. The reference and every candidate use this one
     /// value: cropped differently, the distance would measure the crop.
     static let facePadding: CGFloat = 0.1
+
     /// Which FeaturePrint model every print uses. Pinned rather than left to Vision's
     /// default, so an OS or SDK update cannot quietly swap the model between the
     /// reference and the candidates — prints from different revisions cannot be
     /// compared, and every threshold here was measured on revision 2 (iOS 17+).
     static let featurePrintRevision = VNGenerateImageFeaturePrintRequestRevision2
+
     /// The only way a face should ever be printed. Both the reference and every
     /// candidate go through here, so they cannot drift apart.
     func facePrint(fromFace cgImage: CGImage) -> VNFeaturePrintObservation? {
@@ -3050,6 +3459,7 @@ extension ViewController {
         else { return nil }
         return featurePrint(from: normalised)
     }
+
     /// NOTE: this is a general *image similarity* descriptor, not a face-identity
     /// embedding — it partly encodes lighting, hair and background. Prefer
     /// `facePrint(fromFace:)` for faces; this is the raw call underneath it.
@@ -3061,6 +3471,7 @@ extension ViewController {
         try? handler.perform([request])
         return request.results?.first
     }
+
     /// Vision boxes are normalised with a bottom-left origin; CGImage is top-left.
     /// `padding` is a fraction of the face box. More padding keeps hair and chin;
     /// it also drags in background, which this descriptor happily encodes — the
@@ -3068,15 +3479,19 @@ extension ViewController {
     func crop(_ image: CGImage, to boundingBox: CGRect, padding: CGFloat = ViewController.facePadding) -> CGImage? {
         let w = CGFloat(image.width)
         let h = CGFloat(image.height)
+
         let rect = CGRect(x: boundingBox.origin.x * w,
                           y: (1 - boundingBox.origin.y - boundingBox.height) * h,
                           width: boundingBox.width * w,
                           height: boundingBox.height * h)
+
         let padded = rect.insetBy(dx: -rect.width * padding, dy: -rect.height * padding)
         let clamped = padded.intersection(CGRect(x: 0, y: 0, width: w, height: h))
         guard clamped.width > 1, clamped.height > 1 else { return nil }
+
         return image.cropping(to: clamped)
     }
+
     /// Vision needs the EXIF orientation — without it a portrait photo is analysed
     /// sideways and no face is found.
     static func cgOrientation(_ orientation: UIImage.Orientation) -> CGImagePropertyOrientation {
@@ -3093,13 +3508,17 @@ extension ViewController {
         }
     }
 }
+
 // MARK: - Weak bridge proxy
+
 /// Breaks the retain cycle described in `setupWebView`.
 final class BridgeProxy: NSObject, WKScriptMessageHandler {
     weak var target: WKScriptMessageHandler?
+
     init(target: WKScriptMessageHandler) {
         self.target = target
     }
+
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         target?.userContentController(controller, didReceive: message)
     }
